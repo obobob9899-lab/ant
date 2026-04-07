@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>蟻點通 — 後台</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        :root { --primary: #1a73e8; --danger: #ff4757; --success: #2ed573; }
+        body { margin: 0; font-family: 'Noto Sans TC'; background: #f4f7f9; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        
+        /* 導覽與工具列 */
+        header { background: var(--primary); color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; z-index: 1002; }
+        .batch-toolbar { background: #fff; padding: 10px 20px; border-bottom: 1px solid #ddd; display: flex; gap: 15px; align-items: center; flex-shrink: 0; z-index: 1001; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+
+        /* 戰情室上半部佈局 */
+        .top-section { display: flex; height: 55vh; border-bottom: 2px solid #ddd; flex-shrink: 0; }
+        #admin-map { flex: 1.4; z-index: 1; border-right: 2px solid #ddd; }
+        .charts-grid { flex: 1; padding: 10px; overflow-y: auto; background: #fdfdfd; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .chart-box { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 10px; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+
+        /* 戰情室下半部：表格 */
+        .bottom-section { flex-grow: 1; overflow: auto; padding: 0; background: white; }
+        table { width: 100%; border-collapse: collapse; min-width: 1300px; }
+        th { background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #eee; position: sticky; top: 0; z-index: 10; font-size: 14px; }
+        td { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 13px; }
+        tr:hover td { background: #f1f8ff; cursor: pointer; }
+        
+        /* 狀態顏色 */
+        .status-select { padding: 5px; border-radius: 4px; border: 1px solid #ddd; font-weight: bold; width: 100%; cursor: pointer; }
+        .status-未開始 { background: #ffeaa7; color: #d63031; }
+        .status-聯絡中 { background: #fab1a0; color: #e17055; }
+        .status-解決中 { background: #74b9ff; color: #0984e3; }
+        .status-已解決 { background: #55efc4; color: #00b894; }
+
+        .thumb { width: 45px; height: 45px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; cursor: zoom-in; }
+        
+        /* 燈箱 */
+        #lightbox { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:10000; justify-content:center; align-items:center; }
+        #lightbox img { max-width: 90%; max-height: 90%; }
+
+        /* 地圖 Popup 樣式修正 */
+        .popup-card { width: 220px; font-size: 12px; line-height: 1.4; }
+        .popup-card b { font-size: 14px; color: var(--primary); display: block; margin-bottom: 5px; }
+        .popup-card img { width: 100%; height: 120px; object-fit: cover; border-radius: 4px; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h2>蟻點通 — 後台</h2>
+    <div id="live-clock"></div>
+</header>
+
+<div class="batch-toolbar">
+    <label style="cursor:pointer; font-weight:bold;"><input type="checkbox" id="select-all"> 全選項目</label>
+    <span>批量操作：</span>
+    <select id="batch-status" class="status-select" style="width:120px;">
+        <option value="">更改狀態...</option>
+        <option value="未開始">未開始</option>
+        <option value="聯絡中">聯絡中</option>
+        <option value="解決中">解決中</option>
+        <option value="已解決">已解決</option>
+    </select>
+    <button onclick="applyBatchStatus()" style="background:var(--primary); color:white; border:none; padding:6px 15px; border-radius:4px; cursor:pointer;">執行</button>
+    <button onclick="applyBatchDelete()" style="background:var(--danger); color:white; border:none; padding:6px 15px; border-radius:4px; cursor:pointer;">批量刪除</button>
+    <button onclick="exportToExcel()" style="margin-left:auto; background:var(--success); color:white; border:none; padding:6px 15px; border-radius:4px; cursor:pointer;">匯出 CSV</button>
+</div>
+
+<div class="top-section">
+    <div id="admin-map"></div>
+    <div class="charts-grid">
+        <div class="chart-box"><canvas id="statusLineChart"></canvas></div>
+        <div class="chart-box"><canvas id="cityTrendChart"></canvas></div>
+        <div class="chart-box"><canvas id="cityPieChart"></canvas></div>
+        <div class="chart-box"><canvas id="todayBarChart"></canvas></div>
+    </div>
+</div>
+
+<div class="bottom-section">
+    <table>
+        <thead>
+            <tr>
+                <th width="40">選取</th>
+                <th width="120">當前狀態</th>
+                <th>時間</th>
+                <th>區域</th>
+                <th>通報人/電話</th>
+                <th>地址與備註</th>
+                <th>照片（近照）</th>
+                <th>照片（遠照）</th>
+                <th>管理</th>
+            </tr>
+        </thead>
+        <tbody id="data-list"></tbody>
+    </table>
+</div>
+
+<div id="lightbox" onclick="this.style.display='none'"><img src="" id="lightbox-img"></div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getDatabase, ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    // 更新後的 Firebase 配置
+    const firebaseConfig = {
+        apiKey: "AIzaSyDflseT7vIFW6IksamsyH2fzP9W5Uaz0ho",
+        authDomain: "glass-ant-infestation.firebaseapp.com",
+        databaseURL: "https://glass-ant-infestation-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "glass-ant-infestation",
+        storageBucket: "glass-ant-infestation.firebasestorage.app",
+        messagingSenderId: "148414381675",
+        appId: "1:148414381675:web:37a1660291d46a2e583b2e"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const reportsRef = ref(db, 'reports');
+    
+    // 更新後的 Raspberry Pi Cloudflare URL
+    const BASE_URL = "https://higher-marine-ipaq-prediction.trycloudflare.com";
+
+    const map = L.map('admin-map', {
+        autoPanPadding: L.point(20, 150) 
+    }).setView([23.6, 120.5], 7);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
+    
+    let markerMap = {}; 
+    let charts = {};
+
+    onValue(reportsRef, (snapshot) => {
+        const data = snapshot.val();
+        if (!data) { document.getElementById('data-list').innerHTML = ''; return; }
+        renderTable(data);
+        renderCharts(data);
+        updateMap(data);
+    });
+
+    function renderTable(data) {
+        const tbody = document.getElementById('data-list');
+        tbody.innerHTML = '';
+        Object.keys(data).reverse().forEach(key => {
+            const item = data[key];
+            const status = item.status || "未開始";
+            const tr = document.createElement('tr');
+            tr.onclick = (e) => {
+                if(!['SELECT','INPUT','BUTTON','IMG'].includes(e.target.tagName)) {
+                    map.flyTo([item.lat, item.lng], 16, { padding: [50, 50], paddingTopLeft: [0, 180] });
+                    setTimeout(() => { if(markerMap[key]) markerMap[key].openPopup(); }, 500);
+                }
+            };
+            tr.innerHTML = `
+                <td><input type="checkbox" class="row-checkbox" value="${key}"></td>
+                <td>
+                    <select class="status-select status-${status}" onchange="updateStatus('${key}', this.value)">
+                        <option value="未開始" ${status==='未開始'?'selected':''}>未開始</option>
+                        <option value="聯絡中" ${status==='聯絡中'?'selected':''}>聯絡中</option>
+                        <option value="解決中" ${status==='解決中'?'selected':''}>解決中</option>
+                        <option value="已解決" ${status==='已解決'?'selected':''}>已解決</option>
+                    </select>
+                </td>
+                <td>${new Date(item.timestamp).toLocaleString()}</td>
+                <td><b>${item.city}</b></td>
+                <td>${item.userName}<br><small>${item.userContact}</small></td>
+                <td>${item.address}<br><i style="color:#666; font-size:11px;">${item.note || ''}</i></td>
+                <td><img src="${BASE_URL}${item.photoNear}" class="thumb" onclick="openLightbox(this.src)"></td>
+                <td><img src="${BASE_URL}${item.photoFar}" class="thumb" onclick="openLightbox(this.src)"></td>
+                <td><button onclick="deleteItem('${key}')" style="color:red; border:1px solid #ddd; background:none; cursor:pointer; border-radius:4px;">刪除</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderCharts(data) {
+        const items = Object.values(data);
+        const todayStr = new Date().toLocaleDateString();
+        const dateStats = {}; 
+        const cityTrend = {}; 
+        const todayStats = {}; 
+        const totalCityStats = {}; 
+        const cities = new Set();
+
+        items.forEach(i => {
+            const date = new Date(i.timestamp).toLocaleDateString();
+            const status = i.status || "未開始";
+            const city = i.city;
+            cities.add(city);
+
+            if(!dateStats[date]) dateStats[date] = { "未開始":0, "聯絡中":0, "解決中":0, "已解決":0, "_ts": i.timestamp };
+            dateStats[date][status]++;
+
+            if(!cityTrend[date]) cityTrend[date] = {};
+            cityTrend[date][city] = (cityTrend[date][city] || 0) + 1;
+
+            totalCityStats[city] = (totalCityStats[city] || 0) + 1;
+
+            if(date === todayStr) todayStats[city] = (todayStats[city] || 0) + 1;
+        });
+
+        const sortedDates = Object.keys(dateStats).sort((a,b) => dateStats[a]._ts - dateStats[b]._ts);
+
+        updateChart('statusLineChart', 'line', {
+            labels: sortedDates,
+            datasets: [
+                { label: '未開始', data: sortedDates.map(d => dateStats[d]["未開始"]), borderColor: '#d63031', tension: 0.3 },
+                { label: '聯絡中', data: sortedDates.map(d => dateStats[d]["聯絡中"]), borderColor: '#e17055', tension: 0.3 },
+                { label: '解決中', data: sortedDates.map(d => dateStats[d]["解決中"]), borderColor: '#0984e3', tension: 0.3 },
+                { label: '已解決', data: sortedDates.map(d => dateStats[d]["已解決"]), borderColor: '#00b894', tension: 0.3 }
+            ]
+        }, '歷史處理狀態趨勢');
+
+        const colors = ['#ff9f43','#ee5253','#0abde3','#10ac84','#5f27cd'];
+        updateChart('cityTrendChart', 'line', {
+            labels: sortedDates,
+            datasets: Array.from(cities).map((c, idx) => ({
+                label: c, data: sortedDates.map(d => cityTrend[d][c] || 0), borderColor: colors[idx % 5], tension: 0.3
+            }))
+        }, '各縣市增長趨勢');
+
+        updateChart('cityPieChart', 'pie', {
+            labels: Object.keys(totalCityStats),
+            datasets: [{ data: Object.values(totalCityStats), backgroundColor: colors }]
+        }, '全台通報區域佔比');
+
+        updateChart('todayBarChart', 'bar', {
+            labels: Object.keys(todayStats),
+            datasets: [{ label: '今日數量', data: Object.values(todayStats), backgroundColor: '#341f97' }]
+        }, `今日分佈 (${todayStr})`);
+    }
+
+    function updateMap(data) {
+        Object.values(markerMap).forEach(m => map.removeLayer(m));
+        markerMap = {};
+        Object.keys(data).forEach(key => {
+            const item = data[key];
+            const m = L.marker([item.lat, item.lng]).addTo(map);
+            const popupHTML = `
+                <div class="popup-card">
+                    <b>[${item.status || '未開始'}] </b>
+                    時間：${new Date(item.timestamp).toLocaleString()}<br>
+                    人員：${item.userName} (${item.userContact})<br>
+                    地點：${item.city}${item.address}<br>
+                    備註：${item.note || '無'}<br>
+                    <hr>
+                    <div style="display:flex; gap:5px;">
+                        <select class="status-select status-${item.status||'未開始'}" onchange="updateStatus('${key}', this.value)" style="flex:1">
+                            <option value="未開始" ${item.status==='未開始'?'selected':''}>未開始</option>
+                            <option value="聯絡中" ${item.status==='聯絡中'?'selected':''}>聯絡中</option>
+                            <option value="解決中" ${item.status==='解決中'?'selected':''}>解決中</option>
+                            <option value="已解決" ${item.status==='已解決'?'selected':''}>已解決</option>
+                        </select>
+                        <button onclick="deleteItem('${key}')" style="background:red; color:white; border:none; border-radius:3px; padding:0 10px;">刪除</button>
+                    </div>
+                    <img src="${BASE_URL}${item.photoNear}" onclick="openLightbox(this.src)">
+                    <img src="${BASE_URL}${item.photoFar}" onclick="openLightbox(this.src)">
+                </div>
+            `;
+            m.bindPopup(popupHTML);
+            markerMap[key] = m;
+        });
+    }
+
+    window.updateStatus = (k, v) => update(ref(db, `reports/${k}`), { status: v });
+    window.deleteItem = (k) => { if(confirm("確定刪除？")) remove(ref(db, `reports/${k}`)); };
+    window.openLightbox = (s) => { document.getElementById('lightbox-img').src = s; document.getElementById('lightbox').style.display='flex'; };
+    
+    function updateChart(id, type, data, title) {
+        if(charts[id]) charts[id].destroy();
+        charts[id] = new Chart(document.getElementById(id), {
+            type, data, options: { 
+                responsive:true, maintainAspectRatio:false, 
+                plugins:{ title:{display:true, text:title}, legend:{ position:'bottom', labels:{boxWidth:8, font:{size:10}} } },
+                scales: type!=='pie' ? { y:{beginAtZero:true, ticks:{stepSize:1}} } : {}
+            }
+        });
+    }
+
+    window.applyBatchStatus = () => {
+        const selected = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
+        const status = document.getElementById('batch-status').value;
+        if(!selected.length || !status) return alert("請選擇項目與狀態");
+        const updates = {};
+        selected.forEach(k => updates[`/reports/${k}/status`] = status);
+        update(ref(db), updates);
+    };
+
+    window.applyBatchDelete = () => {
+        const selected = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
+        if(!selected.length || !confirm("確定刪除？")) return;
+        selected.forEach(k => remove(ref(db, `reports/${k}`)));
+    };
+
+    document.getElementById('select-all').onchange = (e) => document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = e.target.checked);
+
+    window.exportToExcel = () => {
+        onValue(reportsRef, (s) => {
+            const data = s.val();
+            let csv = "\uFEFF時間,狀態,城市,地址,人員,電話,圖片（近照）,圖片（遠照）,備註\n";
+            Object.values(data).forEach(i => csv += `"${new Date(i.timestamp).toLocaleString()}","${i.status||'未開始'}","${i.city}","${i.address}","${i.userName}","${i.userContact}","${BASE_URL}${i.photoNear}","${BASE_URL}${i.photoFar}","${(i.note||'').replace(/"/g,'""')}"\n`);
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+            a.download = "琉璃蟻蟻害通報表.csv";
+            a.click();
+        }, { onlyOnce: true });
+    };
+
+    setInterval(() => document.getElementById('live-clock').innerText = new Date().toLocaleString(), 1000);
+</script>
+</body>
+</html>
